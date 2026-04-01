@@ -61,3 +61,6 @@ contracts/lcov.info
 contracts/.env
 contracts/.env.example
 contracts/.vscode/
+
+# Foundry broadcasts
+contracts/broadcast/

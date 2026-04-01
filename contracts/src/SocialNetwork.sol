@@ -38,7 +38,7 @@ contract SocialNetwork {
         uint id,
         uint tipAmount,
         address author
-    );ы
+    );
 
     event PostLiked(
         uint id,
