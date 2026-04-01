@@ -9,7 +9,9 @@
 !.yarn/plugins
 !.yarn/releases
 !.yarn/versions
+contracts/lib/
 
+.history/
 # testing
 /coverage
 
@@ -39,3 +41,23 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Временные файлы
+*.tmp
+.cache/
+
+# Foundry
+contracts/out/
+contracts/cache/
+contracts/broadcast/
+contracts/coverage/
+contracts/lcov.info
+contracts/.env
+contracts/.env.example
+contracts/.vscode/
