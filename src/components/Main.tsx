@@ -1,30 +1,65 @@
+// src/components/Main.tsx
+
 'use client';
 
-import React, { useState } from "react";
+// src/components/Main.tsx
 
-interface Post {
+'use client';
+
+import React, { useState, useCallback, useEffect } from 'react';
+import { ipfsService } from '../services/ipfs';
+
+export interface Post {
   id: number;
   content: string;
   author: string;
   tipAmount: string | number;
-  likeCount?: number;
+  likeCount: number;
+  imageHash?: string | null;
 }
 
 interface MainProps {
   posts: Post[];
-  createPost: (content: string) => void;
+  createPost: (content: string, imageHash?: string) => void;
   tipPost: (id: number, tipAmount: string) => void;
   likePost: (id: number) => void;
+  addComment: (postId: number, content: string) => Promise<void>;
 }
 
-const AddressAvatar = ({ address, size = 30 }: { address: string; size?: number }) => {
-  const getColorFromAddress = (addr: string) => {
-    const hash = addr.slice(2, 8);
-    return `#${hash}`;
+// Улучшенный компонент AddressAvatar с градиентом
+const AddressAvatar = ({ address, size = 44 }: { address: string; size?: number }) => {
+  const normalizeAddress = (addr: string): string => {
+    if (!addr || addr === '0x0000000000000000000000000000000000000000') {
+      return '0x0000000000000000000000000000000000000000';
+    }
+    if (typeof addr !== 'string') {
+      return '0x0000000000000000000000000000000000000000';
+    }
+    if (!addr.startsWith('0x') && addr.length === 40) {
+      return `0x${addr}`;
+    }
+    return addr;
   };
 
-  const getInitials = (addr: string) => {
-    return addr.slice(2, 4).toUpperCase();
+  const cleanAddress = normalizeAddress(address);
+  
+  const getGradientFromAddress = (addr: string): string => {
+    if (addr === '0x0000000000000000000000000000000000000000') {
+      return 'linear-gradient(135deg, #6c757d, #495057)';
+    }
+    const hash1 = addr.slice(2, 8);
+    const hash2 = addr.slice(8, 14);
+    const color1 = `#${hash1}`;
+    const color2 = `#${hash2.padEnd(6, '0')}`;
+    return `linear-gradient(135deg, ${color1}, ${color2})`;
+  };
+
+  const getInitials = (addr: string): string => {
+    if (addr === '0x0000000000000000000000000000000000000000') {
+      return '??';
+    }
+    const initials = addr.slice(2, 4);
+    return initials.toUpperCase() || '??';
   };
 
   return (
@@ -33,195 +68,353 @@ const AddressAvatar = ({ address, size = 30 }: { address: string; size?: number 
         width: size,
         height: size,
         borderRadius: '50%',
-        backgroundColor: getColorFromAddress(address),
+        background: getGradientFromAddress(cleanAddress),
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
         color: 'white',
         fontWeight: 'bold',
-        fontSize: size * 0.4,
+        fontSize: Math.max(size * 0.35, 12),
+        textTransform: 'uppercase',
+        boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
+        border: '2px solid white',
       }}
     >
-      {getInitials(address)}
+      {getInitials(cleanAddress)}
     </div>
   );
 };
 
-export default function Main({ posts, createPost, tipPost, likePost }: MainProps) {
+// Форматирование адреса
+const formatDisplayAddress = (address: string): string => {
+  if (!address || address === '0x0000000000000000000000000000000000000000') {
+    return 'Unknown';
+  }
+  if (address.length <= 10) return address;
+  return `${address.slice(0, 6)}...${address.slice(-4)}`;
+};
+
+// Компонент комментария
+const CommentItem = ({ comment }: { comment: { id: number; content: string; author?: string } }) => {
+  return (
+    <div className="comment-item">
+      <div className="comment-avatar">
+        <span>{comment.author && comment.author !== 'pending...' ? comment.author.slice(2, 4).toUpperCase() : '👤'}</span>
+      </div>
+      <div className="comment-content">
+        <div className="comment-author">
+          {comment.author && comment.author !== 'pending...' ? formatDisplayAddress(comment.author) : 'You'}
+        </div>
+        <div className="comment-text">{comment.content}</div>
+      </div>
+    </div>
+  );
+};
+
+export default function Main({ posts, createPost, tipPost, likePost, addComment }: MainProps) {
   const [postContent, setPostContent] = useState("");
   const [postImage, setPostImage] = useState<File | null>(null);
-  const [imagePreview, setImagePreview] = useState<string | null>(null); // Для предпросмотра
-  const [localImages, setLocalImages] = useState<{ [id: number]: string }>({});
-  const [comments, setComments] = useState<{ [postId: number]: { id: number; content: string }[] }>({});
+  const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [isSubmittingComment, setIsSubmittingComment] = useState<{ [key: number]: boolean }>({});
+  const [localComments, setLocalComments] = useState<{ [postId: number]: { id: number; content: string; author?: string }[] }>({});
+  const [optimisticLikes, setOptimisticLikes] = useState<{ [postId: number]: boolean }>({});
+  const [selectedImage, setSelectedImage] = useState<string | null>(null);
+  const [currentUser, setCurrentUser] = useState<string>("0xC48E3fc74f7fCec688A19589E0F36b8f121eDfce"); // Временно для теста
 
-  const handleSubmit = (e: React.FormEvent) => {
+  useEffect(() => {
+    return () => {
+      if (imagePreview) {
+        URL.revokeObjectURL(imagePreview);
+      }
+    };
+  }, [imagePreview]);
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setUploadError(null);
     
-    // Создаем пост
-    createPost(postContent);
-    
-    // Если есть изображение, сохраняем его URL для предпросмотра
-    // Но обратите внимание: реальное изображение должно сохраняться в IPFS или другом хранилище
-    if (postImage) {
-      const url = URL.createObjectURL(postImage);
-      // Здесь нужно сохранить изображение в постоянное хранилище
-      // Например, загрузить на IPFS и получить хеш
-      console.log("Image to upload:", postImage.name);
-      setImagePreview(url);
+    if (!postContent.trim() && !postImage) {
+      alert("Please add content or an image");
+      return;
     }
     
-    // Очищаем форму
-    setPostContent("");
-    setPostImage(null);
-    setImagePreview(null);
+    setIsUploading(true);
+    
+    try {
+      let imageHash: string | undefined;
+      
+      if (postImage) {
+        console.log("Starting upload to IPFS...", postImage.name);
+        const result = await ipfsService.uploadFileToIPFS(postImage);
+        imageHash = result.hash;
+        console.log("Image uploaded successfully:", result.url);
+      }
+      
+      createPost(postContent, imageHash);
+      setPostContent("");
+      setPostImage(null);
+      setImagePreview(null);
+      
+    } catch (error) {
+      console.error("Error creating post:", error);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+      setUploadError(errorMessage);
+      alert(`Failed to upload: ${errorMessage}`);
+    } finally {
+      setIsUploading(false);
+    }
   };
 
   const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
       const file = e.target.files[0];
-      setPostImage(file);
       
-      // Создаем превью
+      if (file.size > 5 * 1024 * 1024) {
+        alert("File too large! Maximum 5MB");
+        return;
+      }
+      
+      if (!file.type.startsWith('image/')) {
+        alert("Please select an image file");
+        return;
+      }
+      
+      setPostImage(file);
       const previewUrl = URL.createObjectURL(file);
       setImagePreview(previewUrl);
+      setUploadError(null);
     }
   };
 
-  const addComment = (postId: number, content: string) => {
-    const newComment = { id: Date.now(), content };
-    setComments((prev) => ({
-      ...prev,
-      [postId]: [...(prev[postId] || []), newComment],
-    }));
+  const handleOptimisticLike = useCallback((postId: number) => {
+    if (optimisticLikes[postId]) return;
+    setOptimisticLikes(prev => ({ ...prev, [postId]: true }));
+    likePost(postId);
+    setTimeout(() => {
+      setOptimisticLikes(prev => ({ ...prev, [postId]: false }));
+    }, 2000);
+  }, [likePost, optimisticLikes]);
+
+  const handleAddComment = async (postId: number, content: string) => {
+    setIsSubmittingComment(prev => ({ ...prev, [postId]: true }));
+    
+    try {
+      // Отправляем комментарий в блокчейн
+      await addComment(postId, content);
+      
+      // Добавляем комментарий локально с автором
+      const newComment = {
+        id: Date.now(),
+        content: content.trim(),
+        author: currentUser // Используем текущего пользователя
+      };
+      
+      setLocalComments(prev => ({
+        ...prev,
+        [postId]: [...(prev[postId] || []), newComment],
+      }));
+      
+      console.log(`Comment added to post ${postId}:`, content);
+    } catch (error) {
+      console.error("Error adding comment:", error);
+      alert("Failed to add comment. Please try again.");
+    } finally {
+      setIsSubmittingComment(prev => ({ ...prev, [postId]: false }));
+    }
+  };
+
+  const getDisplayComments = (postId: number) => {
+    return localComments[postId] || [];
   };
 
   return (
-    <div className="container mt-5">
-      <form onSubmit={handleSubmit} className="mb-4">
-        <textarea
-          className="form-control mb-2"
-          placeholder="What's on your mind?"
-          value={postContent}
-          onChange={(e) => setPostContent(e.target.value)}
-          rows={3}
-          required
-        />
-        
-        {/* Превью изображения */}
-        {imagePreview && (
-          <div className="mb-2">
-            <img 
-              src={imagePreview} 
-              alt="Preview" 
-              style={{ maxHeight: '200px', maxWidth: '100%' }}
-              className="img-fluid rounded"
-            />
-            <button
-              type="button"
-              className="btn btn-sm btn-danger mt-1"
-              onClick={() => {
-                setPostImage(null);
-                setImagePreview(null);
-              }}
+    <div className="social-container">
+      {/* Форма создания поста */}
+      <div className="post-form-card">
+        <div className="post-form-header">
+          <h3>Create Post</h3>
+        </div>
+        <form onSubmit={handleSubmit}>
+          <textarea
+            className="post-input"
+            placeholder="What's on your mind?"
+            value={postContent}
+            onChange={(e) => setPostContent(e.target.value)}
+            rows={3}
+            disabled={isUploading}
+          />
+          
+          {imagePreview && (
+            <div className="image-preview-container">
+              <img src={imagePreview} alt="Preview" className="image-preview" />
+              <button
+                type="button"
+                className="remove-image-btn"
+                onClick={() => {
+                  setPostImage(null);
+                  setImagePreview(null);
+                  setUploadError(null);
+                }}
+                disabled={isUploading}
+              >
+                ✕ Remove image
+              </button>
+            </div>
+          )}
+          
+          {uploadError && (
+            <div className="error-message">
+              <strong>Upload failed:</strong> {uploadError}
+              <button onClick={() => setUploadError(null)}>Dismiss</button>
+            </div>
+          )}
+          
+          <div className="post-form-actions">
+            <label className="image-upload-btn">
+              📷 Upload Image
+              <input 
+                type="file" 
+                accept="image/*" 
+                onChange={handleImageChange}
+                disabled={isUploading}
+                hidden
+              />
+            </label>
+            <button 
+              type="submit" 
+              className="submit-post-btn"
+              disabled={isUploading || (!postContent.trim() && !postImage)}
             >
-              Remove image
+              {isUploading ? 'Uploading...' : 'Share Post'}
             </button>
           </div>
-        )}
-        
-        <div className="d-flex gap-2">
-          <input 
-            type="file" 
-            accept="image/*" 
-            className="form-control"
-            onChange={handleImageChange}
-          />
-          <button type="submit" className="btn btn-primary">
-            Share Post
-          </button>
-        </div>
-      </form>
+        </form>
+      </div>
 
+      {/* Список постов */}
       {posts.length === 0 ? (
-        <div className="text-center mt-5">
+        <div className="empty-state">
           <p>No posts yet. Be the first to share something!</p>
         </div>
       ) : (
         posts.map((post: Post) => (
-          <div className="card my-4" key={post.id}>
-            <div className="card-header d-flex align-items-center">
-              <AddressAvatar address={post.author} size={30} />
-              <small className="text-muted ms-2">
-                {post.author.slice(0, 6)}...{post.author.slice(-4)}
-              </small>
+          <div className="post-card" key={post.id}>
+            {/* Шапка поста */}
+            <div className="post-header">
+              <AddressAvatar address={post.author} size={44} />
+              <div className="post-author-info">
+                <div className="author-name">{formatDisplayAddress(post.author)}</div>
+                <div className="post-time">Posted just now</div>
+              </div>
             </div>
-            <div className="card-body">
-              <p className="card-text">{post.content}</p>
-
-              {/* Отображение изображения поста */}
-              {localImages[post.id] && (
-                <img 
-                  src={localImages[post.id]} 
-                  className="img-fluid mt-2 rounded" 
-                  alt="post"
-                />
+            
+            {/* Содержание поста */}
+            <div className="post-content">
+              <p className="post-text">{post.content}</p>
+              
+              {post.imageHash && (
+                <div className="post-image-wrapper" onClick={() => setSelectedImage(`https://gateway.pinata.cloud/ipfs/${post.imageHash}`)}>
+                  <img 
+                    src={`https://gateway.pinata.cloud/ipfs/${post.imageHash}`}
+                    className="post-image-display" 
+                    alt="Post"
+                    loading="lazy"
+                    onError={(e) => {
+                      (e.target as HTMLImageElement).src = '/placeholder-image.jpg';
+                    }}
+                  />
+                  <div className="image-zoom-overlay">
+                    <span>🔍 Click to enlarge</span>
+                  </div>
+                </div>
               )}
-
-              <div className="mt-3">
-                <h6>Comments:</h6>
-                {(comments[post.id] || []).map((c) => (
-                  <div key={c.id} className="border p-2 mb-2 rounded bg-light">
-                    {c.content}
-                  </div>
-                ))}
-
-                <form
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    const form = e.target as HTMLFormElement;
-                    const input = form.elements.namedItem("comment") as HTMLInputElement;
-                    if (input.value.trim()) {
-                      addComment(post.id, input.value);
-                      input.value = "";
-                    }
-                  }}
-                >
-                  <div className="input-group">
-                    <input 
-                      name="comment" 
-                      type="text" 
-                      placeholder="Add a comment..." 
-                      className="form-control" 
-                      required 
-                    />
-                    <button type="submit" className="btn btn-outline-secondary">
-                      Comment
-                    </button>
-                  </div>
-                </form>
-              </div>
             </div>
-            <div className="card-footer d-flex justify-content-between align-items-center">
-              <div>
-                <button 
-                  className="btn btn-sm btn-outline-primary me-2" 
-                  onClick={() => likePost(post.id)}
-                >
-                  ❤️ Like ({post.likeCount || 0})
-                </button>
-                <button
-                  className="btn btn-sm btn-outline-success"
-                  onClick={() => tipPost(post.id, "0.1")}
-                >
-                  💸 Tip 0.1 ETH
-                </button>
+            
+            {/* Статистика */}
+            <div className="post-stats">
+              <span>❤️ {post.likeCount + (optimisticLikes[post.id] ? 1 : 0)} likes</span>
+              <span>💬 {getDisplayComments(post.id).length} comments</span>
+              <span>💰 {(Number(post.tipAmount) / 1e18).toFixed(4)} ETH</span>
+            </div>
+            
+            {/* Кнопки действий */}
+            <div className="post-actions">
+              <button 
+                className={`action-btn like-btn ${optimisticLikes[post.id] ? 'liked' : ''}`}
+                onClick={() => handleOptimisticLike(post.id)}
+                disabled={optimisticLikes[post.id]}
+              >
+                ❤️ Like
+              </button>
+              <button
+                className="action-btn tip-btn"
+                onClick={() => tipPost(post.id, "0.1")}
+              >
+                💸 Tip 0.1 ETH
+              </button>
+            </div>
+            
+            {/* Комментарии */}
+            <div className="comments-section">
+              <h4>Comments ({getDisplayComments(post.id).length})</h4>
+              
+              {/* Список комментариев */}
+              <div className="comments-list">
+                {getDisplayComments(post.id).length === 0 ? (
+                  <div className="no-comments">
+                    <p>No comments yet. Be the first to comment!</p>
+                  </div>
+                ) : (
+                  getDisplayComments(post.id).map((c) => (
+                    <CommentItem key={c.id} comment={c} />
+                  ))
+                )}
               </div>
-              <small className="text-muted">
-                TIPS: {Number(post.tipAmount) / 1e18} ETH
-              </small>
+              
+              {/* Форма добавления комментария */}
+              <form
+                className="comment-form"
+                onSubmit={async (e) => {
+                  e.preventDefault();
+                  const form = e.target as HTMLFormElement;
+                  const input = form.elements.namedItem("comment") as HTMLInputElement;
+                  const commentText = input.value.trim();
+                  if (commentText && !isSubmittingComment[post.id]) {
+                    await handleAddComment(post.id, commentText);
+                    input.value = "";
+                  }
+                }}
+              >
+                <input 
+                  name="comment" 
+                  type="text" 
+                  placeholder="Write a comment..." 
+                  className="comment-input"
+                  disabled={isSubmittingComment[post.id]}
+                />
+                <button 
+                  type="submit" 
+                  className="comment-submit"
+                  disabled={isSubmittingComment[post.id]}
+                >
+                  {isSubmittingComment[post.id] ? 'Sending...' : 'Post'}
+                </button>
+              </form>
             </div>
           </div>
         ))
+      )}
+      
+      {/* Модальное окно для изображения */}
+      {selectedImage && (
+        <div className="modal-overlay" onClick={() => setSelectedImage(null)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <span className="modal-close" onClick={() => setSelectedImage(null)}>&times;</span>
+            <img src={selectedImage} alt="Full size" className="modal-image" />
+          </div>
+        </div>
       )}
     </div>
   );
