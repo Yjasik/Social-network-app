@@ -2,10 +2,6 @@
 
 'use client';
 
-// src/components/Main.tsx
-
-'use client';
-
 import React, { useState, useCallback, useEffect } from 'react';
 import { ipfsService } from '../services/ipfs';
 
@@ -16,6 +12,15 @@ export interface Post {
   tipAmount: string | number;
   likeCount: number;
   imageHash?: string | null;
+  comments?: Comment[];
+}
+
+interface Comment {
+  id: number;
+  postId: number;
+  content: string;
+  author: string;
+  timestamp?: bigint;
 }
 
 interface MainProps {
@@ -26,7 +31,6 @@ interface MainProps {
   addComment: (postId: number, content: string) => Promise<void>;
 }
 
-// Улучшенный компонент AddressAvatar с градиентом
 const AddressAvatar = ({ address, size = 44 }: { address: string; size?: number }) => {
   const normalizeAddress = (addr: string): string => {
     if (!addr || addr === '0x0000000000000000000000000000000000000000') {
@@ -85,7 +89,6 @@ const AddressAvatar = ({ address, size = 44 }: { address: string; size?: number 
   );
 };
 
-// Форматирование адреса
 const formatDisplayAddress = (address: string): string => {
   if (!address || address === '0x0000000000000000000000000000000000000000') {
     return 'Unknown';
@@ -94,16 +97,15 @@ const formatDisplayAddress = (address: string): string => {
   return `${address.slice(0, 6)}...${address.slice(-4)}`;
 };
 
-// Компонент комментария
-const CommentItem = ({ comment }: { comment: { id: number; content: string; author?: string } }) => {
+const CommentItem = ({ comment }: { comment: Comment }) => {
   return (
     <div className="comment-item">
       <div className="comment-avatar">
-        <span>{comment.author && comment.author !== 'pending...' ? comment.author.slice(2, 4).toUpperCase() : '👤'}</span>
+        <span>{comment.author.slice(2, 4).toUpperCase()}</span>
       </div>
       <div className="comment-content">
         <div className="comment-author">
-          {comment.author && comment.author !== 'pending...' ? formatDisplayAddress(comment.author) : 'You'}
+          {formatDisplayAddress(comment.author)}
         </div>
         <div className="comment-text">{comment.content}</div>
       </div>
@@ -118,10 +120,8 @@ export default function Main({ posts, createPost, tipPost, likePost, addComment 
   const [isUploading, setIsUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [isSubmittingComment, setIsSubmittingComment] = useState<{ [key: number]: boolean }>({});
-  const [localComments, setLocalComments] = useState<{ [postId: number]: { id: number; content: string; author?: string }[] }>({});
   const [optimisticLikes, setOptimisticLikes] = useState<{ [postId: number]: boolean }>({});
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
-  const [currentUser, setCurrentUser] = useState<string>("0xC48E3fc74f7fCec688A19589E0F36b8f121eDfce"); // Временно для теста
 
   useEffect(() => {
     return () => {
@@ -201,22 +201,8 @@ export default function Main({ posts, createPost, tipPost, likePost, addComment 
     setIsSubmittingComment(prev => ({ ...prev, [postId]: true }));
     
     try {
-      // Отправляем комментарий в блокчейн
       await addComment(postId, content);
-      
-      // Добавляем комментарий локально с автором
-      const newComment = {
-        id: Date.now(),
-        content: content.trim(),
-        author: currentUser // Используем текущего пользователя
-      };
-      
-      setLocalComments(prev => ({
-        ...prev,
-        [postId]: [...(prev[postId] || []), newComment],
-      }));
-      
-      console.log(`Comment added to post ${postId}:`, content);
+      // После успешной транзакции App.tsx обновит посты с новыми комментариями
     } catch (error) {
       console.error("Error adding comment:", error);
       alert("Failed to add comment. Please try again.");
@@ -225,13 +211,13 @@ export default function Main({ posts, createPost, tipPost, likePost, addComment 
     }
   };
 
-  const getDisplayComments = (postId: number) => {
-    return localComments[postId] || [];
+  // ✅ Получаем комментарии из поста
+  const getPostComments = (post: Post) => {
+    return post.comments || [];
   };
 
   return (
     <div className="social-container">
-      {/* Форма создания поста */}
       <div className="post-form-card">
         <div className="post-form-header">
           <h3>Create Post</h3>
@@ -293,121 +279,116 @@ export default function Main({ posts, createPost, tipPost, likePost, addComment 
         </form>
       </div>
 
-      {/* Список постов */}
       {posts.length === 0 ? (
         <div className="empty-state">
           <p>No posts yet. Be the first to share something!</p>
         </div>
       ) : (
-        posts.map((post: Post) => (
-          <div className="post-card" key={post.id}>
-            {/* Шапка поста */}
-            <div className="post-header">
-              <AddressAvatar address={post.author} size={44} />
-              <div className="post-author-info">
-                <div className="author-name">{formatDisplayAddress(post.author)}</div>
-                <div className="post-time">Posted just now</div>
-              </div>
-            </div>
-            
-            {/* Содержание поста */}
-            <div className="post-content">
-              <p className="post-text">{post.content}</p>
-              
-              {post.imageHash && (
-                <div className="post-image-wrapper" onClick={() => setSelectedImage(`https://gateway.pinata.cloud/ipfs/${post.imageHash}`)}>
-                  <img 
-                    src={`https://gateway.pinata.cloud/ipfs/${post.imageHash}`}
-                    className="post-image-display" 
-                    alt="Post"
-                    loading="lazy"
-                    onError={(e) => {
-                      (e.target as HTMLImageElement).src = '/placeholder-image.jpg';
-                    }}
-                  />
-                  <div className="image-zoom-overlay">
-                    <span>🔍 Click to enlarge</span>
-                  </div>
+        posts.map((post: Post) => {
+          const postComments = getPostComments(post);
+          
+          return (
+            <div className="post-card" key={post.id}>
+              <div className="post-header">
+                <AddressAvatar address={post.author} size={44} />
+                <div className="post-author-info">
+                  <div className="author-name">{formatDisplayAddress(post.author)}</div>
+                  <div className="post-time">Posted just now</div>
                 </div>
-              )}
-            </div>
-            
-            {/* Статистика */}
-            <div className="post-stats">
-              <span>❤️ {post.likeCount + (optimisticLikes[post.id] ? 1 : 0)} likes</span>
-              <span>💬 {getDisplayComments(post.id).length} comments</span>
-              <span>💰 {(Number(post.tipAmount) / 1e18).toFixed(4)} ETH</span>
-            </div>
-            
-            {/* Кнопки действий */}
-            <div className="post-actions">
-              <button 
-                className={`action-btn like-btn ${optimisticLikes[post.id] ? 'liked' : ''}`}
-                onClick={() => handleOptimisticLike(post.id)}
-                disabled={optimisticLikes[post.id]}
-              >
-                ❤️ Like
-              </button>
-              <button
-                className="action-btn tip-btn"
-                onClick={() => tipPost(post.id, "0.1")}
-              >
-                💸 Tip 0.1 ETH
-              </button>
-            </div>
-            
-            {/* Комментарии */}
-            <div className="comments-section">
-              <h4>Comments ({getDisplayComments(post.id).length})</h4>
+              </div>
               
-              {/* Список комментариев */}
-              <div className="comments-list">
-                {getDisplayComments(post.id).length === 0 ? (
-                  <div className="no-comments">
-                    <p>No comments yet. Be the first to comment!</p>
+              <div className="post-content">
+                <p className="post-text">{post.content}</p>
+                
+                {post.imageHash && (
+                  <div className="post-image-wrapper" onClick={() => setSelectedImage(`https://gateway.pinata.cloud/ipfs/${post.imageHash}`)}>
+                    <img 
+                      src={`https://gateway.pinata.cloud/ipfs/${post.imageHash}`}
+                      className="post-image-display" 
+                      alt="Post"
+                      loading="lazy"
+                      onError={(e) => {
+                        (e.target as HTMLImageElement).src = '/placeholder-image.jpg';
+                      }}
+                    />
+                    <div className="image-zoom-overlay">
+                      <span>🔍 Click to enlarge</span>
+                    </div>
                   </div>
-                ) : (
-                  getDisplayComments(post.id).map((c) => (
-                    <CommentItem key={c.id} comment={c} />
-                  ))
                 )}
               </div>
               
-              {/* Форма добавления комментария */}
-              <form
-                className="comment-form"
-                onSubmit={async (e) => {
-                  e.preventDefault();
-                  const form = e.target as HTMLFormElement;
-                  const input = form.elements.namedItem("comment") as HTMLInputElement;
-                  const commentText = input.value.trim();
-                  if (commentText && !isSubmittingComment[post.id]) {
-                    await handleAddComment(post.id, commentText);
-                    input.value = "";
-                  }
-                }}
-              >
-                <input 
-                  name="comment" 
-                  type="text" 
-                  placeholder="Write a comment..." 
-                  className="comment-input"
-                  disabled={isSubmittingComment[post.id]}
-                />
+              <div className="post-stats">
+                <span>❤️ {post.likeCount + (optimisticLikes[post.id] ? 1 : 0)} likes</span>
+                <span>💬 {postComments.length} comments</span>
+                <span>💰 {(Number(post.tipAmount) / 1e18).toFixed(4)} ETH</span>
+              </div>
+              
+              <div className="post-actions">
                 <button 
-                  type="submit" 
-                  className="comment-submit"
-                  disabled={isSubmittingComment[post.id]}
+                  className={`action-btn like-btn ${optimisticLikes[post.id] ? 'liked' : ''}`}
+                  onClick={() => handleOptimisticLike(post.id)}
+                  disabled={optimisticLikes[post.id]}
                 >
-                  {isSubmittingComment[post.id] ? 'Sending...' : 'Post'}
+                  ❤️ Like
                 </button>
-              </form>
+                <button
+                  className="action-btn tip-btn"
+                  onClick={() => tipPost(post.id, "0.1")}
+                >
+                  💸 Tip 0.1 ETH
+                </button>
+              </div>
+              
+              <div className="comments-section">
+                <h4>Comments ({postComments.length})</h4>
+                
+                <div className="comments-list">
+                  {postComments.length === 0 ? (
+                    <div className="no-comments">
+                      <p>No comments yet. Be the first to comment!</p>
+                    </div>
+                  ) : (
+                    postComments.map((c) => (
+                      <CommentItem key={c.id} comment={c} />
+                    ))
+                  )}
+                </div>
+                
+                <form
+                  className="comment-form"
+                  onSubmit={async (e) => {
+                    e.preventDefault();
+                    const form = e.target as HTMLFormElement;
+                    const input = form.elements.namedItem("comment") as HTMLInputElement;
+                    const commentText = input.value.trim();
+                    if (commentText && !isSubmittingComment[post.id]) {
+                      await handleAddComment(post.id, commentText);
+                      input.value = "";
+                    }
+                  }}
+                >
+                  <input 
+                    name="comment" 
+                    type="text" 
+                    placeholder="Write a comment..." 
+                    className="comment-input"
+                    disabled={isSubmittingComment[post.id]}
+                  />
+                  <button 
+                    type="submit" 
+                    className="comment-submit"
+                    disabled={isSubmittingComment[post.id]}
+                  >
+                    {isSubmittingComment[post.id] ? 'Sending...' : 'Post'}
+                  </button>
+                </form>
+              </div>
             </div>
-          </div>
-        ))
+          );
+        })
       )}
       
-      {/* Модальное окно для изображения */}
       {selectedImage && (
         <div className="modal-overlay" onClick={() => setSelectedImage(null)}>
           <div className="modal-content" onClick={(e) => e.stopPropagation()}>

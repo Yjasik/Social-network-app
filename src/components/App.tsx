@@ -1,4 +1,4 @@
-// src/components/App.tsx - исправленная версия
+// src/components/App.tsx
 
 'use client';
 
@@ -19,9 +19,17 @@ interface AppPost {
   tipAmount: string;
   likeCount: number;
   imageHash?: string | null;
+  comments?: CommentData[];
 }
 
-// Создаем публичный клиент
+interface CommentData {
+  id: number;
+  postId: number;
+  content: string;
+  author: string;
+  timestamp?: bigint;
+}
+
 const publicClient = createPublicClient({
   chain: sepolia,
   transport: http(process.env.NEXT_PUBLIC_SEPOLIA_RPC_URL),
@@ -82,33 +90,60 @@ export default function App() {
     hash: addCommentHash,
   });
 
-  // ✅ ИСПРАВЛЕННАЯ функция нормализации данных поста
+  // ✅ Функция для загрузки комментариев поста
+  const loadCommentsForPost = async (postId: number): Promise<CommentData[]> => {
+    try {
+      const result = await publicClient.readContract({
+        address: CONTRACT_ADDRESS,
+        abi: SocialNetwork.abi,
+        functionName: 'getComments',
+        args: [BigInt(postId)],
+      }) as any[];
+      
+      if (!result || !Array.isArray(result)) return [];
+      
+      const formattedComments: CommentData[] = [];
+      
+      for (const comment of result) {
+        if (Array.isArray(comment)) {
+          formattedComments.push({
+            id: Number(comment[0]),
+            postId: Number(comment[1]),
+            content: comment[2],
+            author: comment[3],
+            timestamp: comment[4],
+          });
+        } else if (comment && typeof comment === 'object') {
+          formattedComments.push({
+            id: Number(comment.id),
+            postId: Number(comment.postId),
+            content: comment.content,
+            author: comment.author,
+            timestamp: comment.timestamp,
+          });
+        }
+      }
+      
+      return formattedComments;
+    } catch (error) {
+      console.error(`Error loading comments for post ${postId}:`, error);
+      return [];
+    }
+  };
+
   const normalizePostData = (data: any) => {
-    // Логируем полученные данные для отладки
-    console.log('Raw post data:', data);
-    
-    // Проверяем, что данные - это объект или массив
     if (!data) return null;
     
-    // Если данные пришли как массив
     if (Array.isArray(data)) {
-      // Определяем структуру по порядку полей в контракте
-      // Структура Post: id, content, imageHash?, tipAmount, author, likeCount
-      // Или: id, content, tipAmount, author, likeCount (без imageHash)
-      
-      // Пытаемся определить, есть ли imageHash в данных
-      // Если строка во 2-м индексе выглядит как IPFS хеш (начинается с bafy или Qm)
       const secondField = data[1];
       const thirdField = data[2];
       
-      let id, content, imageHash, tipAmount, author, likeCount;
-      
-      // Проверяем, является ли второй или третий параметр IPFS хешем
       const isIpfsHash = (str: string) => 
         typeof str === 'string' && (str.startsWith('bafy') || str.startsWith('Qm') || str.includes('ipfs'));
       
+      let id, content, imageHash, tipAmount, author, likeCount;
+      
       if (isIpfsHash(thirdField)) {
-        // Формат: [id, content, imageHash, tipAmount, author, likeCount]
         id = data[0];
         content = data[1];
         imageHash = data[2];
@@ -116,7 +151,6 @@ export default function App() {
         author = data[4];
         likeCount = data[5];
       } else if (isIpfsHash(secondField)) {
-        // Формат: [id, imageHash, tipAmount, author, likeCount] (без content?)
         id = data[0];
         imageHash = data[1];
         tipAmount = data[2];
@@ -124,7 +158,6 @@ export default function App() {
         likeCount = data[4];
         content = "";
       } else {
-        // Формат: [id, content, tipAmount, author, likeCount] (без imageHash)
         id = data[0];
         content = data[1];
         tipAmount = data[2];
@@ -143,7 +176,6 @@ export default function App() {
       };
     }
     
-    // Если данные пришли как объект
     if (typeof data === 'object') {
       return {
         id: data.id,
@@ -158,7 +190,6 @@ export default function App() {
     return null;
   };
 
-  // Загрузка постов из контракта
   const loadPosts = async () => {
     if (!postCount || Number(postCount) === 0) {
       setPosts([]);
@@ -184,14 +215,19 @@ export default function App() {
       const results = await Promise.all(postPromises);
       const loadedPosts: AppPost[] = [];
       
-      for (const result of results) {
+      for (let i = 0; i < results.length; i++) {
+        const result = results[i];
         if (!result) continue;
         
         try {
           const rawPost = normalizePostData(result);
           if (!rawPost) continue;
           
-          // Преобразуем author в строку
+          const postId = Number(rawPost.id);
+          
+          // ✅ Загружаем комментарии для поста
+          const comments = await loadCommentsForPost(postId);
+          
           let authorAddress = '0x0000000000000000000000000000000000000000';
           if (rawPost.author) {
             authorAddress = typeof rawPost.author === 'string' 
@@ -199,11 +235,9 @@ export default function App() {
               : String(rawPost.author);
           }
           
-          // Извлекаем IPFS хеш, если он есть в контенте
           let imageHash = rawPost.imageHash;
           let cleanContent = rawPost.content || "";
           
-          // Если imageHash не найден, ищем в контенте
           if (!imageHash && cleanContent) {
             const ipfsMatch = cleanContent.match(/\[Image: ipfs:\/\/([a-zA-Z0-9]+)\]/);
             if (ipfsMatch) {
@@ -212,7 +246,6 @@ export default function App() {
             }
           }
           
-          // ✅ Безопасное преобразование tipAmount
           let tipAmountValue = "0";
           if (rawPost.tipAmount) {
             if (typeof rawPost.tipAmount === 'bigint') {
@@ -224,7 +257,6 @@ export default function App() {
             }
           }
           
-          // ✅ Безопасное преобразование likeCount
           let likeCountNum = 0;
           if (rawPost.likeCount) {
             if (typeof rawPost.likeCount === 'bigint') {
@@ -237,19 +269,19 @@ export default function App() {
           }
           
           loadedPosts.push({
-            id: Number(rawPost.id),
+            id: postId,
             content: cleanContent || "(No content)",
             author: authorAddress,
             tipAmount: tipAmountValue,
             likeCount: likeCountNum,
             imageHash: imageHash,
+            comments: comments, // ✅ Добавляем комментарии в пост
           });
         } catch (error) {
           console.error('Error processing post:', error);
         }
       }
       
-      // ✅ Безопасная сортировка - проверяем, что tipAmount - это число
       loadedPosts.sort((a, b) => {
         const tipA = parseFloat(a.tipAmount) || 0;
         const tipB = parseFloat(b.tipAmount) || 0;
