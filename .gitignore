@@ -63,4 +63,4 @@ contracts/.env.example
 contracts/.vscode/
 
 # Foundry broadcasts
-contracts/broadcast/
+contracts/broadcast/.history/
